@@ -24,6 +24,14 @@ And now our TinyGLRenderer works as a valid render backend for Three.js.
 Examples
 --------
 
+[![Birds](http://humu2009.github.io/TinyGLRenderer/screenshots/birds.jpg)](http://humu2009.github.io/TinyGLRenderer/runnables/examples/tinygl_geometry_birds.html)
+[![Cube](http://humu2009.github.io/TinyGLRenderer/screenshots/cube.jpg)](http://humu2009.github.io/TinyGLRenderer/runnables/examples/tinygl_geometry_cube.html)
+[![Earth](http://humu2009.github.io/TinyGLRenderer/screenshots/earth.jpg)](http://humu2009.github.io/TinyGLRenderer/runnables/examples/tinygl_geometry_earth.html)
+[![Panorama](http://humu2009.github.io/TinyGLRenderer/screenshots/panorama.jpg)](http://humu2009.github.io/TinyGLRenderer/runnables/examples/tinygl_geometry_panorama.html)
+[![Horse](http://humu2009.github.io/TinyGLRenderer/screenshots/horse.jpg)](http://humu2009.github.io/TinyGLRenderer/runnables/examples/tinygl_morphtargets_horse.html)
+[![Video Material](http://humu2009.github.io/TinyGLRenderer/screenshots/video.jpg)](http://humu2009.github.io/TinyGLRenderer/runnables/examples/tinygl_materials_video.html)
+
+
 Requirements
 ------------
 
