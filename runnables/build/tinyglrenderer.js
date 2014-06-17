@@ -64,7 +64,8 @@ THREE.TinyGLRenderer = function ( parameters ) {
 	var _frustum = new THREE.Frustum();
 
 	var _renderData = {
-		objects: [], 
+		meshes:  [], 
+		lines:   [], 
 		sprites: [], 
 		lights:  []
 	};
@@ -98,8 +99,12 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		if ( object instanceof THREE.Light )
 			_renderData.lights.push( object );
 		else if ( object instanceof THREE.Mesh || object instanceof THREE.Line ) {
-			if ( object.frustumCulled === false || _frustum.intersectsObject( object ) === true )
-				_renderData.objects.push( object );
+			if ( object.frustumCulled === false || _frustum.intersectsObject( object ) === true ) {
+				if ( object instanceof THREE.Mesh )
+					_renderData.meshes.push( object );
+				else
+					_renderData.lines.push( object );
+			}
 		} else if ( object instanceof THREE.Sprite )
 			_renderData.sprites.push( object );
 
@@ -109,7 +114,8 @@ THREE.TinyGLRenderer = function ( parameters ) {
 	};
 
 	var walkGraph = function(root) {
-		_renderData.objects.length = 0;
+		_renderData.meshes.length  = 0;
+		_renderData.lines.length   = 0;
 		_renderData.sprites.length = 0;
 		_renderData.lights.length  = 0;
 
@@ -291,14 +297,14 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		//
 		if ( lighting ) {
 			if ( material instanceof THREE.MeshBasicMaterial ) {
-				setMatLitCoefficients( side, ZERO4, ZERO4, toColor4( material.color ), ZERO4, [1] );
+				setMatIllumCoefficients( side, ZERO4, ZERO4, toColor4( material.color ), ZERO4, [1] );
 			} else if ( material instanceof THREE.MeshLambertMaterial ) {
-				setMatLitCoefficients( side, toColor4( material.ambient ), toColor4( material.color ), 
-									   toColor4( material.emissive ), ZERO4, [1] );
+				setMatIllumCoefficients( side, toColor4( material.ambient ), toColor4( material.color ), 
+										 toColor4( material.emissive ), ZERO4, [1] );
 			} else if ( material instanceof THREE.MeshPhongMaterial ) {
-				setMatLitCoefficients( side, toColor4( material.ambient ), toColor4( material.color ), 
-									   toColor4( material.emissive ), toColor4( material.specular ), 
-									   [material.shininess] );
+				setMatIllumCoefficients( side, toColor4( material.ambient ), toColor4( material.color ), 
+										 toColor4( material.emissive ), toColor4( material.specular ), 
+										 [material.shininess] );
 			}
 		}
 	};
@@ -369,7 +375,7 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		deleteGLTexture( texture );
 	};
 
-	var setMatLitCoefficients = function(side, ambient, diffuse, emissive, specular, shininess) {
+	var setMatIllumCoefficients = function(side, ambient, diffuse, emissive, specular, shininess) {
 		_gl.materialfv( side, _gl.AMBIENT, ambient );
 		_gl.materialfv( side, _gl.DIFFUSE, diffuse );
 		_gl.materialfv( side, _gl.EMISSION, emissive );
@@ -515,9 +521,9 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		}, 
 
 		render: {
-			lights: 0, 
+			lights:   0, 
 			vertices: 0, 
-			faces: 0
+			faces:    0
 		}
 
 	};
@@ -640,289 +646,299 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		else
 			_gl.disable( _gl.LIGHTING );
 
-		// render objects
+		// render meshes
 		//
-		for (var oi=0, ol=_renderData.objects.length; oi<ol; oi++) {
-			var object = _renderData.objects[oi];
-			var geometry = object.geometry;
-			var modelMatrix = object.matrixWorld;
+		for (var oi=0, ol=_renderData.meshes.length; oi<ol; oi++) {
+			var mesh = _renderData.meshes[oi];
+			var geometry = mesh.geometry;
+			var modelMatrix = mesh.matrixWorld;
 
-			if ( object instanceof THREE.Mesh ) {
-				var vertices = geometry.vertices;
-				var faces = geometry.faces;
-				var faceVertexUvs = geometry.faceVertexUvs;
+			var vertices = geometry.vertices;
+			var faces = geometry.faces;
+			var faceVertexUvs = geometry.faceVertexUvs;
 
-				var isFaceMaterial = object.material instanceof THREE.MeshFaceMaterial;
-				var objectMaterials = isFaceMaterial === true ? object.material : null;
+			var isFaceMaterial = mesh.material instanceof THREE.MeshFaceMaterial;
+			var objectMaterials = isFaceMaterial === true ? mesh.material : null;
 
-				var useMorphing = false;
+			var useMorphing = false;
 
-				if ( isFaceMaterial === false ) {
-					if ( !object.material )
-						continue;
-					else {
-						applyMaterial( object.material, useLighting );
+			if ( isFaceMaterial === false ) {
+				if ( !mesh.material )
+					continue;
+				else {
+					applyMaterial( mesh.material, useLighting );
 
-						// compute vertex normals if they are not prepared yet
-						if ( object.material.shading === THREE.SmoothShading && 
-							 geometry.faces.length > 0 && geometry.faces[0].vertexNormals.length === 0 ) {
-							geometry.computeVertexNormals();
-						}
+					// compute vertex normals if they are not prepared yet
+					if ( mesh.material.shading === THREE.SmoothShading && 
+						 geometry.faces.length > 0 && geometry.faces[0].vertexNormals.length === 0 ) {
+						geometry.computeVertexNormals();
+					}
 
-						if ( object.material.morphTargets && object.morphTargetBase ) {
-							useMorphing = updateMorphing( object );
-						}
+					if ( mesh.material.morphTargets && mesh.morphTargetBase ) {
+						useMorphing = updateMorphing( mesh );
 					}
 				}
+			}
 
-				_gl.pushMatrix();
-				_gl.multMatrixf( modelMatrix.toArray() );
+			_gl.pushMatrix();
+			_gl.multMatrixf( modelMatrix.toArray() );
 
-				var face;
-				var v0, v1, v2;
-				var fuvs = faceVertexUvs[0];
-				var fn;
-				var vns;
-				var n0, n1, n2;
-				var vcs;
-				var c0, c1, c2;
-				var uvs;
-				var uv0, uv1, uv2;
-				for (var fi=0, fl=faces.length; fi<fl; fi++) {
-					face = faces[fi];
-					fn   = face.normal;
-					vns  = face.vertexNormals;
-					vcs  = face.vertexColors;
+			var face;
+			var v0, v1, v2;
+			var fuvs = faceVertexUvs[0];
+			var fn;
+			var vns;
+			var n0, n1, n2;
+			var vcs;
+			var c0, c1, c2;
+			var uvs;
+			var uv0, uv1, uv2;
+			for (var fi=0, fl=faces.length; fi<fl; fi++) {
+				face = faces[fi];
+				fn   = face.normal;
+				vns  = face.vertexNormals;
+				vcs  = face.vertexColors;
 
-					var material = isFaceMaterial === true ? objectMaterials.materials[ face.materialIndex ] : object.material;
-					if ( material === undefined )
-						continue;
-
-					if ( isFaceMaterial === true )
-						applyMaterial( material, useLighting );
-
-					var useVertexNormal = ( material.shading === THREE.SmoothShading ) && ( vns.length >= 3 );
-					var useVertexColor  = ( material.vertexColors == THREE.VertexColors ) && ( vcs.length >= 3 );
-
-					// update statistics
-					this.info.render.vertices += 3;
-					this.info.render.faces++;
-
-					if ( useMorphing ) {
-						v0 = getMorphedPosition( geometry.morphTargets, face.a, _vertex0 );
-						v1 = getMorphedPosition( geometry.morphTargets, face.b, _vertex1 );
-						v2 = getMorphedPosition( geometry.morphTargets, face.c, _vertex2 );
-
-					} else {
-						v0 = vertices[face.a];
-						v1 = vertices[face.b];
-						v2 = vertices[face.c];
-					}
-
-					if ( useLighting ) {
-						// apply face normal
-						if ( !useVertexNormal ) {
-							if ( useMorphing && material.morphNormals ) {
-								getMorphedFaceNormal( geometry.morphNormals, fi, _normal0 );
-								_gl.normal3f( _normal0.x, _normal0.y, _normal0.z );
-							} else
-								_gl.normal3f( fn.x, fn.y, fn.z );
-						}
-					}
-
-					_gl.begin(_gl.TRIANGLES);
-					if ( hasTextureMapping( geometry, material ) ) {
-						uvs = fuvs[fi];
-						if ( uvs !== undefined ) {
-							uv0 = uvs[0];
-							uv1 = uvs[1];
-							uv2 = uvs[2];
-
-							if ( useLighting && useVertexNormal ) {
-								/*
-								 * Smooth shading + Texturing
-								 */
-								if ( useMorphing && material.morphNormals ) {
-									getMorphedVertexNormals( geometry.morphNormals, fi, _normal0, _normal1, _normal2 );
-									n0 = _normal0;
-									n1 = _normal1;
-									n2 = _normal2;
-								} else {
-									n0 = vns[0];
-									n1 = vns[1];
-									n2 = vns[2];
-								}
-
-								_gl.texCoord2f( uv0.x, uv0.y );
-								_gl.normal3f( n0.x, n0.y, n0.z );
-								_gl.vertex3f( v0.x, v0.y, v0.z );
-								_gl.texCoord2f( uv1.x, uv1.y );
-								_gl.normal3f( n1.x, n1.y, n1.z );
-								_gl.vertex3f( v1.x, v1.y, v1.z );
-								_gl.texCoord2f( uv2.x, uv2.y );
-								_gl.normal3f( n2.x, n2.y, n2.x );
-								_gl.vertex3f( v2.x, v2.y, v2.z );
-
-							} else {
-								/*
-								 * (Flat shading +) Texturing
-								 */
-								_gl.texCoord2f( uv0.x, uv0.y );
-								_gl.vertex3f( v0.x, v0.y, v0.z );
-								_gl.texCoord2f( uv1.x, uv1.y );
-								_gl.vertex3f( v1.x, v1.y, v1.z );
-								_gl.texCoord2f( uv2.x, uv2.y );
-								_gl.vertex3f( v2.x, v2.y, v2.z );
-							}
-						}
-					} else {
-						if ( material.vertexColors === THREE.FaceColors ) {
-							c0 = face.color;
-							_gl.color3f( c0.r, c0.g, c0.b );
-
-							if ( useLighting && useVertexNormal ) {
-								/*
-								 * Smooth shading + Per face color
-								 */
-								if ( useMorphing && material.morphNormals ) {
-									getMorphedVertexNormals( geometry.morphNormals, fi, _normal0, _normal1, _normal2 );
-									n0 = _normal0;
-									n1 = _normal1;
-									n2 = _normal2;
-								} else {
-									n0 = vns[0];
-									n1 = vns[1];
-									n2 = vns[2];
-								}
-
-								_gl.normal3f( n0.x, n0.y, n0.z );
-								_gl.vertex3f( v0.x, v0.y, v0.z );
-								_gl.normal3f( n1.x, n1.y, n1.z );
-								_gl.vertex3f( v1.x, v1.y, v1.z );
-								_gl.normal3f( n2.x, n2.y, n2.z );
-								_gl.vertex3f( v2.x, v2.y, v2.z );
-
-							} else {
-								/*
-								 * (Flat shading +) Per face color
-								 */
-								_gl.vertex3f( v0.x, v0.y, v0.z );
-								_gl.vertex3f( v1.x, v1.y, v1.z );
-								_gl.vertex3f( v2.x, v2.y, v2.z );
-							}
-						} else if ( useVertexColor ) {
-							c0 = vcs[0];
-							c1 = vcs[1];
-							c2 = vcs[2];
-
-							if ( useLighting && useVertexNormal ) {
-								/*
-								 * Smooth shading + Per vertex color
-								 */
-								if ( useMorphing && material.morphNormals ) {
-									getMorphedVertexNormals( geometry.morphNormals, fi, _normal0, _normal1, _normal2 );
-									n0 = _normal0;
-									n1 = _normal1;
-									n2 = _normal2;
-								} else {
-									n0 = vns[0];
-									n1 = vns[1];
-									n2 = vns[2];
-								}
-
-								_gl.color3f( c0.r, c0.g, c0.b );
-								_gl.normal3f( n0.x, n0.y, n0.z );
-								_gl.vertex3f( v0.x, v0.y, v0.z );
-								_gl.color3f( c1.r, c1.g, c1.b );
-								_gl.normal3f( n1.x, n1.y, n1.z );
-								_gl.vertex3f( v1.x, v1.y, v1.z );
-								_gl.color3f( c2.r, c2.g, c2.b );
-								_gl.normal3f( n2.x, n2.y, n2.z );
-								_gl.vertex3f( v2.x, v2.y, v2.z );
-
-							} else {
-								/*
-								 * (Flat shading +) Per vertex color
-								 */
-								_gl.color3f( c0.r, c0.g, c0.b );
-								_gl.vertex3f( v0.x, v0.y, v0.z );
-								_gl.color3f( c1.x, c1.y, c1.z );
-								_gl.vertex3f( v1.x, v1.y, v1.z );
-								_gl.color3f( c2.r, c2.g, c2.b );
-								_gl.vertex3f( v2.x, v2.y, v2.z );
-							}
-						} else {
-							if ( useLighting && useVertexNormal ) {
-								/*
-								 * Smooth shading + Basic material color
-								 */
-								if ( useMorphing && material.morphNormals ) {
-									getMorphedVertexNormals( geometry.morphNormals, fi, _normal0, _normal1, _normal2 );
-									n0 = _normal0;
-									n1 = _normal1;
-									n2 = _normal2;
-								} else {
-									n0 = vns[0];
-									n1 = vns[1];
-									n2 = vns[2];
-								}
-
-								_gl.normal3f( n0.x, n0.y, n0.z );
-								_gl.vertex3f( v0.x, v0.y, v0.z );
-								_gl.normal3f( n1.x, n1.y, n1.z );
-								_gl.vertex3f( v1.x, v1.y, v1.z );
-								_gl.normal3f( n2.x, n2.y, n2.z );
-								_gl.vertex3f( v2.x, v2.y, v2.z );
-
-							} else {
-								/*
-								 * (Flat shading +) Basic material color
-								 */
-								_gl.vertex3f( v0.x, v0.y, v0.z );
-								_gl.vertex3f( v1.x, v1.y, v1.z );
-								_gl.vertex3f( v2.x, v2.y, v2.z );
-							}
-						}
-
-					}
-					_gl.end();
-				}
-				
-				_gl.popMatrix();
-
-			} else if ( object instanceof THREE.Line ) {
-				var vertices = geometry.vertices;
-				var colors   = geometry.colors;
-				var material = object.material;
-
+				var material = isFaceMaterial === true ? objectMaterials.materials[ face.materialIndex ] : mesh.material;
 				if ( material === undefined )
 					continue;
 
-				var useVertexColor = ( material.vertexColors === true ) && ( colors.length === vertices.length );
-				if ( !useVertexColor ) {
-					_color.copy( material.color );
-					_gl.color3f( _color.r, _color.g, _color.b );
+				// update statistics
+				this.info.render.vertices += 3;
+				this.info.render.faces++;
+
+				if ( isFaceMaterial === true )
+					applyMaterial( material, useLighting );
+
+				var useVertexNormal = ( material.shading === THREE.SmoothShading ) && ( vns.length >= 3 );
+				var useVertexColor  = ( material.vertexColors == THREE.VertexColors ) && ( vcs.length >= 3 );
+
+				if ( useMorphing ) {
+					v0 = getMorphedPosition( geometry.morphTargets, face.a, _vertex0 );
+					v1 = getMorphedPosition( geometry.morphTargets, face.b, _vertex1 );
+					v2 = getMorphedPosition( geometry.morphTargets, face.c, _vertex2 );
+
+				} else {
+					v0 = vertices[face.a];
+					v1 = vertices[face.b];
+					v2 = vertices[face.c];
 				}
 
-				_gl.pushMatrix();
-				_gl.multMatrixf( modelMatrix.toArray() );
-
-				_gl.begin( object.type === THREE.LinePieces ? _gl.LINES : _gl.LINE_STRIP );
-
-				var v, c;
-				for (var vi=0, vl=vertices.length; vi<vl; vi++) {
-					v = vertices[vi];
-					if ( useVertexColor ) {
-						c = colors[vi];
-						_gl.color3f( c.r, c.g, c.b );
+				if ( useLighting ) {
+					// apply face normal
+					if ( !useVertexNormal ) {
+						if ( useMorphing && material.morphNormals ) {
+							getMorphedFaceNormal( geometry.morphNormals, fi, _normal0 );
+							_gl.normal3f( _normal0.x, _normal0.y, _normal0.z );
+						} else
+							_gl.normal3f( fn.x, fn.y, fn.z );
 					}
-					_gl.vertex3f( v.x, v.y, v.z );
 				}
 
-				_gl.end();
+				_gl.begin(_gl.TRIANGLES);
+				if ( hasTextureMapping( geometry, material ) ) {
+					uvs = fuvs[fi];
+					if ( uvs !== undefined ) {
+						uv0 = uvs[0];
+						uv1 = uvs[1];
+						uv2 = uvs[2];
 
-				_gl.popMatrix();
+						if ( useLighting && useVertexNormal ) {
+							/*
+							 * Smooth shading + Texturing
+							 */
+							if ( useMorphing && material.morphNormals ) {
+								getMorphedVertexNormals( geometry.morphNormals, fi, _normal0, _normal1, _normal2 );
+								n0 = _normal0;
+								n1 = _normal1;
+								n2 = _normal2;
+							} else {
+								n0 = vns[0];
+								n1 = vns[1];
+								n2 = vns[2];
+							}
+
+							_gl.texCoord2f( uv0.x, uv0.y );
+							_gl.normal3f( n0.x, n0.y, n0.z );
+							_gl.vertex3f( v0.x, v0.y, v0.z );
+							_gl.texCoord2f( uv1.x, uv1.y );
+							_gl.normal3f( n1.x, n1.y, n1.z );
+							_gl.vertex3f( v1.x, v1.y, v1.z );
+							_gl.texCoord2f( uv2.x, uv2.y );
+							_gl.normal3f( n2.x, n2.y, n2.x );
+							_gl.vertex3f( v2.x, v2.y, v2.z );
+
+						} else {
+							/*
+							 * (Flat shading +) Texturing
+							 */
+							_gl.texCoord2f( uv0.x, uv0.y );
+							_gl.vertex3f( v0.x, v0.y, v0.z );
+							_gl.texCoord2f( uv1.x, uv1.y );
+							_gl.vertex3f( v1.x, v1.y, v1.z );
+							_gl.texCoord2f( uv2.x, uv2.y );
+							_gl.vertex3f( v2.x, v2.y, v2.z );
+						}
+					}
+				} else if ( material.vertexColors === THREE.FaceColors ) {
+					c0 = face.color;
+					_gl.color3f( c0.r, c0.g, c0.b );
+
+					if ( useLighting && useVertexNormal ) {
+						/*
+						 * Smooth shading + Per face color
+						 */
+						if ( useMorphing && material.morphNormals ) {
+							getMorphedVertexNormals( geometry.morphNormals, fi, _normal0, _normal1, _normal2 );
+							n0 = _normal0;
+							n1 = _normal1;
+							n2 = _normal2;
+						} else {
+							n0 = vns[0];
+							n1 = vns[1];
+							n2 = vns[2];
+						}
+
+						_gl.normal3f( n0.x, n0.y, n0.z );
+						_gl.vertex3f( v0.x, v0.y, v0.z );
+						_gl.normal3f( n1.x, n1.y, n1.z );
+						_gl.vertex3f( v1.x, v1.y, v1.z );
+						_gl.normal3f( n2.x, n2.y, n2.z );
+						_gl.vertex3f( v2.x, v2.y, v2.z );
+
+					} else {
+						/*
+						 * (Flat shading +) Per face color
+						 */
+						_gl.vertex3f( v0.x, v0.y, v0.z );
+						_gl.vertex3f( v1.x, v1.y, v1.z );
+						_gl.vertex3f( v2.x, v2.y, v2.z );
+					}
+				} else if ( useVertexColor ) {
+					c0 = vcs[0];
+					c1 = vcs[1];
+					c2 = vcs[2];
+
+					if ( useLighting && useVertexNormal ) {
+						/*
+						 * Smooth shading + Per vertex color
+						 */
+						if ( useMorphing && material.morphNormals ) {
+							getMorphedVertexNormals( geometry.morphNormals, fi, _normal0, _normal1, _normal2 );
+							n0 = _normal0;
+							n1 = _normal1;
+							n2 = _normal2;
+						} else {
+							n0 = vns[0];
+							n1 = vns[1];
+							n2 = vns[2];
+						}
+
+						_gl.color3f( c0.r, c0.g, c0.b );
+						_gl.normal3f( n0.x, n0.y, n0.z );
+						_gl.vertex3f( v0.x, v0.y, v0.z );
+						_gl.color3f( c1.r, c1.g, c1.b );
+						_gl.normal3f( n1.x, n1.y, n1.z );
+						_gl.vertex3f( v1.x, v1.y, v1.z );
+						_gl.color3f( c2.r, c2.g, c2.b );
+						_gl.normal3f( n2.x, n2.y, n2.z );
+						_gl.vertex3f( v2.x, v2.y, v2.z );
+
+					} else {
+						/*
+						 * (Flat shading +) Per vertex color
+						 */
+						_gl.color3f( c0.r, c0.g, c0.b );
+						_gl.vertex3f( v0.x, v0.y, v0.z );
+						_gl.color3f( c1.x, c1.y, c1.z );
+						_gl.vertex3f( v1.x, v1.y, v1.z );
+						_gl.color3f( c2.r, c2.g, c2.b );
+						_gl.vertex3f( v2.x, v2.y, v2.z );
+					}
+				} else {
+					if ( useLighting && useVertexNormal ) {
+						/*
+						 * Smooth shading + Basic material color
+						 */
+						if ( useMorphing && material.morphNormals ) {
+							getMorphedVertexNormals( geometry.morphNormals, fi, _normal0, _normal1, _normal2 );
+							n0 = _normal0;
+							n1 = _normal1;
+							n2 = _normal2;
+						} else {
+							n0 = vns[0];
+							n1 = vns[1];
+							n2 = vns[2];
+						}
+
+						_gl.normal3f( n0.x, n0.y, n0.z );
+						_gl.vertex3f( v0.x, v0.y, v0.z );
+						_gl.normal3f( n1.x, n1.y, n1.z );
+						_gl.vertex3f( v1.x, v1.y, v1.z );
+						_gl.normal3f( n2.x, n2.y, n2.z );
+						_gl.vertex3f( v2.x, v2.y, v2.z );
+
+					} else {
+						/*
+						 * (Flat shading +) Basic material color
+						 */
+						_gl.vertex3f( v0.x, v0.y, v0.z );
+						_gl.vertex3f( v1.x, v1.y, v1.z );
+						_gl.vertex3f( v2.x, v2.y, v2.z );
+					}
+				}
+				_gl.end();
 			}
+			
+			_gl.popMatrix();
+		}
+
+		// Do not illuminate lines and sprites
+		//
+		_gl.disable( _gl.LIGHTING );
+
+		// render lines
+		//
+		for (var oi=0, ol=_renderData.lines.length; oi<ol; oi++) {
+			var line = _renderData.lines[oi];
+			var geometry = line.geometry;
+			var modelMatrix = line.matrixWorld;
+
+			var vertices = geometry.vertices;
+			var colors   = geometry.colors;
+			var material = line.material;
+
+			if ( material === undefined )
+				continue;
+
+			var useVertexColor = ( material.vertexColors === true ) && ( colors.length === vertices.length );
+			if ( !useVertexColor ) {
+				_color.copy( material.color );
+				_gl.color3f( _color.r, _color.g, _color.b );
+			}
+
+			_gl.pushMatrix();
+			_gl.multMatrixf( modelMatrix.toArray() );
+
+			_gl.begin( line.type === THREE.LinePieces ? _gl.LINES : _gl.LINE_STRIP );
+
+			var v, c;
+			for (var vi=0, vl=vertices.length; vi<vl; vi++) {
+				v = vertices[vi];
+
+				// update statistics
+				this.info.render.vertices++;
+
+				if ( useVertexColor ) {
+					c = colors[vi];
+					_gl.color3f( c.r, c.g, c.b );
+				}
+				_gl.vertex3f( v.x, v.y, v.z );
+			}
+
+			_gl.end();
+
+			_gl.popMatrix();
 		}
 
 		// render sprites
@@ -932,6 +948,8 @@ THREE.TinyGLRenderer = function ( parameters ) {
 
 			//not implemented yet
 		}
+
+		_gl.flush();
 
 		_gl.swapBuffers();
 	};
