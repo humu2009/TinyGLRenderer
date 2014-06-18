@@ -1,7 +1,7 @@
 TinyGLRenderer
 ==============
 
-TinyGLRenderer is an experimental renderer for [Three.js](https://github.com/mrdoob/three.js) 3D graphic library. It utilize [TinyGL.js](https://github.com/humu2009/tinygl.js), which implements a subset of OpenGL 1.1 API, for transform, lighting and primitive reaterization.
+TinyGLRenderer is an experimental renderer for [Three.js](https://github.com/mrdoob/three.js) 3D graphic library. It utilize [TinyGL.js](https://github.com/humu2009/tinygl.js), which implements a subset of OpenGL 1.1 API, for transform, lighting and primitive rasterization. The aim of this project is to make an optional render backend for Three.js that works with or without WebGL, as well as providing a benchmark for testing TinyGL.js.
 
 Usage
 -----
@@ -13,13 +13,13 @@ To let TinyGLRenderer work with Three.js, first the `tinyglrenderer.js` should b
 <script type="text/javascript" src="`tinyglrenderer.js"></script>
 ```
 
-Then initialize the renderer instance just like that for Three.js's built-in renderers:
+Then initialize the renderer instance just like that for Three.js's built-in ones:
 
 ```js
 var renderer = new THREE.TinyGLRenderer();
 ```
 
-And now our TinyGLRenderer works as a valid render backend for Three.js.
+And now our TinyGLRenderer works as a compatible renderer for Three.js.
 
 Examples
 --------
