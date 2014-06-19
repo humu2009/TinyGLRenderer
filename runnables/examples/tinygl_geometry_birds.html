@@ -440,6 +440,9 @@
 
 					bird.phase = ( bird.phase + ( Math.max( 0, bird.rotation.z ) + 0.1 )  ) % 62.83;
 					bird.geometry.vertices[ 5 ].y = bird.geometry.vertices[ 4 ].y = Math.sin( bird.phase ) * 5;
+					// Humu 2014/6/19
+					// tell the renderer the vertices have changed
+					bird.geometry.verticesNeedUpdate = true;
 
 				}
 
