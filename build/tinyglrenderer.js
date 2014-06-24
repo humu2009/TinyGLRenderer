@@ -39,7 +39,10 @@ THREE.TinyGLRenderer = function ( parameters ) {
 
 	var _canvas = parameters.canvas !== undefined ? parameters.canvas : document.createElement( 'canvas' );
 
-	var _gl = _canvas.getContext('experimental-tinygl'/*, {driver: 'webgl'}*/);
+	var _forceWireframe = parameters.forceWireframe === true;
+	var _sortBeforeRender = parameters.sortObjects !== false;
+
+	var _gl = _canvas.getContext('experimental-tinygl', parameters);
 	if (!_gl)
 		throw 'Error creating TinyGL context.';
 
@@ -64,11 +67,14 @@ THREE.TinyGLRenderer = function ( parameters ) {
 	var _frustum = new THREE.Frustum();
 
 	var _renderData = {
-		meshes:  [], 
-		lines:   [], 
-		sprites: [], 
-		lights:  []
+		meshes:          [], 
+		lines:           [], 
+		particleSystems: [], 
+		sprites:         [], 
+		lights:          []
 	};
+
+	var _displayListCache = {};
 
 	var _ambientColor = new THREE.Color;
 
@@ -98,12 +104,14 @@ THREE.TinyGLRenderer = function ( parameters ) {
 
 		if ( object instanceof THREE.Light )
 			_renderData.lights.push( object );
-		else if ( object instanceof THREE.Mesh || object instanceof THREE.Line ) {
+		else if ( object instanceof THREE.Mesh || object instanceof THREE.Line || object instanceof THREE.ParticleSystem ) {
 			if ( object.frustumCulled === false || _frustum.intersectsObject( object ) === true ) {
 				if ( object instanceof THREE.Mesh )
 					_renderData.meshes.push( object );
-				else
+				else if ( object instanceof THREE.Line )
 					_renderData.lines.push( object );
+				else
+					_renderData.particleSystems.push( object );
 			}
 		} else if ( object instanceof THREE.Sprite )
 			_renderData.sprites.push( object );
@@ -116,10 +124,31 @@ THREE.TinyGLRenderer = function ( parameters ) {
 	var walkGraph = function(root) {
 		_renderData.meshes.length  = 0;
 		_renderData.lines.length   = 0;
+		_renderData.particleSystems.length = 0;
 		_renderData.sprites.length = 0;
 		_renderData.lights.length  = 0;
 
-		collectObjects(root);
+		collectObjects( root );
+	};
+
+	var sortObjects = function(objects, orderFunc) {
+		objects.sort( orderFunc );
+	};
+
+	var computeObjectsDepth = function(objects) {
+		for (var oi=0, ol=objects.length; oi<ol; oi++) {
+			var object = objects[oi];
+			if ( object._tgl === undefined )
+				object._tgl = {};
+
+			if ( object.renderDepth !== null && object.renderDepth !== undefined )
+				object._tgl.depth = object.renderDepth;
+			else {
+				// compute depth in view space
+				_position.getPositionFromMatrix( object.matrixWorld ).applyMatrix4( _viewMatrix );
+				object._tgl.depth = _position.z;
+			}
+		}
 	};
 
 	var applyLights = function(lights) {
@@ -241,10 +270,10 @@ THREE.TinyGLRenderer = function ( parameters ) {
 
 		// polygon filling mode
 		//
-		if ( !material.wireframe )
-			_gl.polygonMode( side, _gl.FILL );
-		else
+		if ( material.wireframe || _forceWireframe )
 			_gl.polygonMode( side, _gl.LINE );
+		else
+			_gl.polygonMode( side, _gl.FILL );
 
 		// shading mode
 		//
@@ -291,9 +320,11 @@ THREE.TinyGLRenderer = function ( parameters ) {
 				_gl.bindTexture( _gl.TEXTURE_2D, material.map._tgl.texId );
 			} else
 				_gl.disable( _gl.TEXTURE_2D );
+		} else {
+			_gl.disable( _gl.TEXTURE_2D );
 		}
 
-		// lighting
+		// surface illumination coefficients
 		//
 		if ( lighting ) {
 			if ( material instanceof THREE.MeshBasicMaterial ) {
@@ -307,33 +338,6 @@ THREE.TinyGLRenderer = function ( parameters ) {
 										 [material.shininess] );
 			}
 		}
-	};
-
-	var consumeMaterialChanged = function(material) {
-		//NOTE: we cannot determine whether a material has changed by simply 
-		//      check if material.needsUpdate === true, for Three.js seems to 
-		//      always initialize it to ture. So we cache some key properties 
-		//      of a material and check all of them each time.
-		//
-
-		var changed = false;
-		if ( material._tgl === undefined )
-			material._tgl = {};
-		else {
-			changed = ( material._tgl.shading !== material.shading ) || 
-					  ( material._tgl.hasMap !== !!material.map ) || 
-					  ( material._tgl.vertexColors !== material.vertexColors ) || 
-					  ( material._tgl.morphTargets !== material.morphTargets ) || 
-					  ( material._tgl.morphNormals !== material.morphNormals );
-		}
-
-		material._tgl.shading = material.shading;
-		material._tgl.hasMap = !!material.map;
-		material._tgl.vertexColors = material.vertexColors;
-		material._tgl.morphTargets = material.morphTargets;
-		material._tgl.morphNormals = material.morphNormals;
-
-		return changed;
 	};
 
 	var isGLTextureReady = function(texture) {
@@ -402,46 +406,60 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		deleteGLTexture( texture );
 	};
 
-	var drawLine = function(line) {
-		var geometry = line.geometry;
-		var material = line.material;
-		var modelMatrix = line.matrixWorld;
+	var onMaterialDispose = function(evt) {
+		var material = evt.target;
+		material.removeEventListener( 'dispose', onMaterialDispose );
+		deleteGLList( material );
+	};
+
+	var onGeometryDispose = function(evt) {
+		var geometry = evt.target;
+		geometry.removeEventListener( 'dispose', onGeometryDispose );
+		deleteGLList( geometry );
+	};
+
+	var drawParticles = function(particleSystem) {
+		var geometry = particleSystem.geometry;
+		var material = particleSystem.material;
+		var modelMatrix = particleSystem.matrixWorld;
+
+		var vertices = geometry.vertices;
+		var colors   = geometry.colors;
 
 		if ( material === undefined )
 			return;
 
 		var useCompiled = false;
 		var compileAndExecute = false;
-		if ( hasGLList( geometry ) ) {
-			if ( !hasGeometryChanged( geometry ) && !consumeMaterialChanged( material ) )
+		if ( checkGLList( particleSystem ) ) {
+			if ( !hasObjectChanged( particleSystem ) )
 				useCompiled = true;
 			else
-				setGeometryAsUncompilable( geometry );
+				setObjectAsMutable( particleSystem );
 		} else {
-			compileAndExecute = isGeometryCompilable( geometry );
+			compileAndExecute = suggestCompileObject( particleSystem );
 		}
 
 		_gl.pushMatrix();
 		_gl.multMatrixf( modelMatrix.toArray() );
 
 		if ( useCompiled ) {
-			_gl.callList( geometry._tgl.listId );
+			_gl.callList( particleSystem._tgl.listId );
+			_this.info.render.vertices += vertices.length;
+			_this.info.render.calls++;
 		} else {
-			var vertices = geometry.vertices;
-			var colors   = geometry.colors;
-
-			var useVertexColor = ( material.vertexColors === true ) && ( colors.length === vertices.length );
+			var useVertexColor = material.vertexColors && ( colors.length === vertices.length );
 			if ( !useVertexColor ) {
-				_color.copy( material.color );
-				_gl.color3f( _color.r, _color.g, _color.b );
+				var materialColor = material.color;
+				_gl.color3f( materialColor.r, materialColor.g, materialColor.b );
 			}
 
 			if ( compileAndExecute ) {
-				createOrUpdateGLList( geometry );
-				_gl.newList( geometry._tgl.listId, _gl.COMPILE );
+				createOrUpdateGLList( particleSystem );
+				_gl.newList( particleSystem._tgl.listId, _gl.COMPILE );
 			}
 
-			_gl.begin( line.type === THREE.LinePieces ? _gl.LINES : _gl.LINE_STRIP );
+			_gl.begin( _gl.POINTS );
 
 			var v, c;
 			for (var vi=0, vl=vertices.length; vi<vl; vi++) {
@@ -449,6 +467,7 @@ THREE.TinyGLRenderer = function ( parameters ) {
 
 				// update statistics
 				_this.info.render.vertices++;
+				_this.info.render.calls++;
 
 				if ( useVertexColor ) {
 					c = colors[vi];
@@ -461,7 +480,82 @@ THREE.TinyGLRenderer = function ( parameters ) {
 
 			if ( compileAndExecute ) {
 				_gl.endList();
-				_gl.callList( geometry._tgl.listId );
+				_gl.callList( particleSystem._tgl.listId );
+				_this.info.render.vertices += vertices.length;
+				_this.info.render.calls++;
+			}
+		}
+
+		_gl.popMatrix();
+	};
+
+	var drawLine = function(line) {
+		var geometry = line.geometry;
+		var material = line.material;
+		var modelMatrix = line.matrixWorld;
+
+		var vertices = geometry.vertices;
+		var colors   = geometry.colors;
+
+		if ( material === undefined )
+			return;
+
+		var useCompiled = false;
+		var compileAndExecute = false;
+		if ( checkGLList( line ) ) {
+			if ( !hasObjectChanged( line ) )
+				useCompiled = true;
+			else
+				setObjectAsMutable( line );
+		} else {
+			compileAndExecute = suggestCompileObject( line );
+		}
+
+		_gl.pushMatrix();
+		_gl.multMatrixf( modelMatrix.toArray() );
+
+		if ( useCompiled ) {
+			_gl.callList( line._tgl.listId );
+			_this.info.render.vertices += vertices.length;
+			_this.info.render.calls++;
+		} else {
+			var useVertexColor = ( material.vertexColors /* === true */ ) && ( colors.length === vertices.length );
+			if ( !useVertexColor ) {
+				_color.copy( material.color );
+				_gl.color3f( _color.r, _color.g, _color.b );
+			}
+
+			if ( compileAndExecute ) {
+				createOrUpdateGLList( line );
+				_gl.newList( line._tgl.listId, _gl.COMPILE );
+			}
+
+			_gl.begin( line.type === THREE.LinePieces ? _gl.LINES : _gl.LINE_STRIP );
+
+			var v, c;
+			for (var vi=0, vl=vertices.length; vi<vl; vi++) {
+				v = vertices[vi];
+
+				// update statistics
+				_this.info.render.vertices++;
+				_this.info.render.calls++;
+
+				if ( useVertexColor ) {
+					c = colors[vi];
+					_gl.color3f( c.r, c.g, c.b );
+				}
+				_gl.vertex3f( v.x, v.y, v.z );
+			}
+
+			_gl.end();
+
+			_this.info.render.calls++;
+
+			if ( compileAndExecute ) {
+				_gl.endList();
+				_gl.callList( line._tgl.listId );
+				_this.info.render.vertices += vertices.length;
+				_this.info.render.calls++;
 			}
 		}
 
@@ -484,7 +578,7 @@ THREE.TinyGLRenderer = function ( parameters ) {
 
 		var useMorphing = false;
 
-		if ( isFaceMaterial === false ) {
+		if ( isFaceMaterial === false ) { // material per mesh
 			if ( !mesh.material )
 				return;
 
@@ -499,33 +593,64 @@ THREE.TinyGLRenderer = function ( parameters ) {
 			if ( mesh.material.morphTargets && mesh.morphTargetBase ) {
 				useMorphing = updateMorphing( mesh );
 			}
+		} else { // material per face
+			// pack faces into batches by materials so that material switching 
+			// can be minimized in drawing
+			//
+			if ( !hasBatches( mesh ) ) 
+				batchFacesByMaterial( mesh );
+			if ( mesh._tgl.batches.length < 1 )
+				return;
 		}
 
 		var useCompiled = false;
 		var compileAndExecute = false;
-		if ( hasGLList( geometry ) ) {
-			if ( !hasGeometryChanged( geometry ) && !consumeMaterialChanged( mesh.material ) )
+		if ( checkGLList( mesh ) ) {
+			if ( !hasObjectChanged( mesh ) )
 				useCompiled = true;
 			else
-				setGeometryAsUncompilable( geometry );
+				setObjectAsMutable( mesh );
 		} else if ( !isFaceMaterial && !mesh.material.morphTargets && !mesh.material.morphNormals ) {
-			compileAndExecute = isGeometryCompilable( geometry );
+			compileAndExecute = suggestCompileObject( mesh );
 		}
 		
 		_gl.pushMatrix();
 		_gl.multMatrixf( modelMatrix.toArray() );
 
 		if ( useCompiled ) {
-			_gl.callList( geometry._tgl.listId );
+			_gl.callList( mesh._tgl.listId );
+			_this.info.render.faces += faces.length;
+			_this.info.render.vertices += 3 * faces.length;
+			_this.info.render.calls++;
 		} else if ( compileAndExecute ) {
-			compileGeometryOfMesh( geometry, mesh.material );
-			_gl.callList( geometry._tgl.listId );
+			compileMesh( mesh );
+			_gl.callList( mesh._tgl.listId );
+			_this.info.render.faces += faces.length;
+			_this.info.render.vertices += 3 * faces.length;
+			_this.info.render.calls++;
 		} else {
 			/*
 			 * Immediate mode: faces and vertices are submitted repeatedly for each frame.
 			 */
 
+			var material = mesh.material;
+
+			var batches;
+			var batchIndex = 0;
+			var batch;
+			var faceIndices;
+			var indexOffset = 0;
+			if ( isFaceMaterial ) {
+				batches = mesh._tgl.batches;
+				batch = batches[0];
+				faceIndices = batch.faceIndices;
+				material = objectMaterials.materials[batch.materialIndex];
+
+				applyMaterial( material, useLighting );
+			}
+
 			var face;
+			var faceIndex;
 			var v0, v1, v2;
 			var fuvs = faceVertexUvs[0];
 			var fn;
@@ -536,21 +661,17 @@ THREE.TinyGLRenderer = function ( parameters ) {
 			var uvs;
 			var uv0, uv1, uv2;
 			for (var fi=0, fl=faces.length; fi<fl; fi++) {
-				face = faces[fi];
+				faceIndex = ( isFaceMaterial === false ) ? fi : faceIndices[indexOffset];
+
+				face = faces[faceIndex];
 				fn   = face.normal;
 				vns  = face.vertexNormals;
 				vcs  = face.vertexColors;
 
-				var material = isFaceMaterial === true ? objectMaterials.materials[ face.materialIndex ] : mesh.material;
-				if ( material === undefined )
-					continue;
-
 				// update statistics
-				_this.info.render.vertices += 3;
 				_this.info.render.faces++;
-
-				if ( isFaceMaterial === true )
-					applyMaterial( material, useLighting );
+				_this.info.render.vertices += 3;
+				_this.info.render.calls += 3;
 
 				var useVertexNormal = ( material.shading === THREE.SmoothShading ) && ( vns.length >= 3 );
 				var useVertexColor  = ( material.vertexColors == THREE.VertexColors ) && ( vcs.length >= 3 );
@@ -570,7 +691,7 @@ THREE.TinyGLRenderer = function ( parameters ) {
 					// apply face normal
 					if ( !useVertexNormal && material.shading === THREE.FlatShading ) {
 						if ( useMorphing && material.morphNormals ) {
-							getMorphedFaceNormal( geometry.morphNormals, fi, _normal0 );
+							getMorphedFaceNormal( geometry.morphNormals, faceIndex, _normal0 );
 							_gl.normal3f( _normal0.x, _normal0.y, _normal0.z );
 						} else
 							_gl.normal3f( fn.x, fn.y, fn.z );
@@ -579,7 +700,7 @@ THREE.TinyGLRenderer = function ( parameters ) {
 
 				_gl.begin(_gl.TRIANGLES);
 				if ( hasTextureMapping( geometry, material ) ) {
-					uvs = fuvs[fi];
+					uvs = fuvs[faceIndex];
 					if ( uvs !== undefined ) {
 						uv0 = uvs[0];
 						uv1 = uvs[1];
@@ -590,7 +711,7 @@ THREE.TinyGLRenderer = function ( parameters ) {
 							 * Smooth shading + Texturing
 							 */
 							if ( useMorphing && material.morphNormals ) {
-								getMorphedVertexNormals( geometry.morphNormals, fi, _normal0, _normal1, _normal2 );
+								getMorphedVertexNormals( geometry.morphNormals, faceIndex, _normal0, _normal1, _normal2 );
 								n0 = _normal0;
 								n1 = _normal1;
 								n2 = _normal2;
@@ -607,7 +728,7 @@ THREE.TinyGLRenderer = function ( parameters ) {
 							_gl.normal3f( n1.x, n1.y, n1.z );
 							_gl.vertex3f( v1.x, v1.y, v1.z );
 							_gl.texCoord2f( uv2.x, uv2.y );
-							_gl.normal3f( n2.x, n2.y, n2.x );
+							_gl.normal3f( n2.x, n2.y, n2.z );
 							_gl.vertex3f( v2.x, v2.y, v2.z );
 
 						} else {
@@ -631,7 +752,7 @@ THREE.TinyGLRenderer = function ( parameters ) {
 						 * Smooth shading + Per face color
 						 */
 						if ( useMorphing && material.morphNormals ) {
-							getMorphedVertexNormals( geometry.morphNormals, fi, _normal0, _normal1, _normal2 );
+							getMorphedVertexNormals( geometry.morphNormals, faceIndex, _normal0, _normal1, _normal2 );
 							n0 = _normal0;
 							n1 = _normal1;
 							n2 = _normal2;
@@ -666,7 +787,7 @@ THREE.TinyGLRenderer = function ( parameters ) {
 						 * Smooth shading + Per vertex color
 						 */
 						if ( useMorphing && material.morphNormals ) {
-							getMorphedVertexNormals( geometry.morphNormals, fi, _normal0, _normal1, _normal2 );
+							getMorphedVertexNormals( geometry.morphNormals, faceIndex, _normal0, _normal1, _normal2 );
 							n0 = _normal0;
 							n1 = _normal1;
 							n2 = _normal2;
@@ -703,7 +824,7 @@ THREE.TinyGLRenderer = function ( parameters ) {
 						 * Smooth shading + Basic material color
 						 */
 						if ( useMorphing && material.morphNormals ) {
-							getMorphedVertexNormals( geometry.morphNormals, fi, _normal0, _normal1, _normal2 );
+							getMorphedVertexNormals( geometry.morphNormals, faceIndex, _normal0, _normal1, _normal2 );
 							n0 = _normal0;
 							n1 = _normal1;
 							n2 = _normal2;
@@ -730,13 +851,35 @@ THREE.TinyGLRenderer = function ( parameters ) {
 					}
 				}
 				_gl.end();
+
+				_this.info.render.calls++;
+
+				if ( isFaceMaterial === true ) {
+					// Step to next face. If it reaches the end of this batch, then 
+					// continue to next batch (if any) and apply the new material.
+					//
+					if ( ++indexOffset >= faceIndices.length ) {
+						if ( ++batchIndex >= batches.length )
+							break;
+
+						batch = batches[batchIndex];
+						faceIndices = batch.faceIndices;
+						material = objectMaterials.materials[batch.materialIndex];
+						indexOffset = 0;
+
+						applyMaterial( material, useLighting );
+					}
+				}
 			}
 		}
 
 		_gl.popMatrix();
 	};
 
-	var compileGeometryOfMesh = function(geometry, material) {
+	var compileMesh = function(mesh) {
+		var geometry = mesh.geometry;
+		var material = mesh.material;
+
 		var vertices = geometry.vertices;
 		var faces = geometry.faces;
 		var faceVertexUvs = geometry.faceVertexUvs;
@@ -747,8 +890,8 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		var useVertexColor  = ( material.vertexColors == THREE.VertexColors ) && ( faces[0].vertexColors.length >= 3 );
 		var useVertexUV     = material.map && ( geometry.faceVertexUvs[0].length > 0 );
 
-		createOrUpdateGLList( geometry );
-		_gl.newList( geometry._tgl.listId, _gl.COMPILE );
+		createOrUpdateGLList( mesh );
+		_gl.newList( mesh._tgl.listId, _gl.COMPILE );
 
 		var face;
 		var v0, v1, v2;
@@ -802,7 +945,7 @@ THREE.TinyGLRenderer = function ( parameters ) {
 						_gl.normal3f( n1.x, n1.y, n1.z );
 						_gl.vertex3f( v1.x, v1.y, v1.z );
 						_gl.texCoord2f( uv2.x, uv2.y );
-						_gl.normal3f( n2.x, n2.y, n2.x );
+						_gl.normal3f( n2.x, n2.y, n2.z );
 						_gl.vertex3f( v2.x, v2.y, v2.z );
 
 					} else {
@@ -909,53 +1052,170 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		_gl.endList();
 	};
 
-	var hasGeometryChanged = function(geometry) {
-		return geometry.verticesNeedUpdate || geometry.colorsNeedUpdate || 
-				geometry.normalsNeedUpdate || geometry.uvsNeedUpdate;
+	var hasBatches = function(mesh) {
+		return ( mesh._tgl !== undefined ) && ( mesh._tgl.batches !== undefined );
 	};
 
-	var setGeometryAsUncompilable = function(geometry) {
-		if ( geometry._tgl === undefined )
-			geometry._tgl = {};
+	var batchFacesByMaterial = function(mesh) {
+		var geometry = mesh.geometry;
+		var material = mesh.material;
 
-		if ( geometry._tgl.listId !== undefined )
-			deleteGLList( geometry );
+		//ASSERT: material instanceof THREE.MeshFaceMaterial
 
-		geometry._tgl.dontCompile = true;
+		var batches = [];
+		for (var mi=0, ml=material.materials.length; mi<ml; mi++) {
+			batches.push( {
+				materialIndex: mi, 
+				faceIndices: []
+			} );
+		}
+
+		var faces = geometry.faces;
+		for (var fi=0, fl=faces.length; fi<fl; fi++) {
+			var face = faces[fi];
+
+			var batch = batches[ face.materialIndex ];
+			if ( batch === undefined )
+				continue;
+
+			batch.faceIndices.push( fi );
+		}
+
+		if ( mesh._tgl === undefined )
+			mesh._tgl = {};
+
+		mesh._tgl.batches = batches;
 	};
 
-	var isGeometryCompilable = function(geometry) {
-		return ( geometry._tgl === undefined ) || ( geometry._tgl.dontCompile !== true );
+	var commitGeometryUpdated = function(geometry) {
+		geometry.verticesNeedUpdate = false;
+		geometry.colorsNeedUpdate = false;
+		geometry.normalsNeedUpdate = false;
+		geometry.uvsNeedUpdate = false;
+		// Other flags? We don't use them yet.
 	};
 
-	var hasGLList = function(geometry) {
-		return ( geometry._tgl !== undefined ) && ( geometry._tgl.listId !== undefined );
+	var commitMaterialUpdated = function(material) {
+		if ( material instanceof THREE.MeshFaceMaterial ) {
+			for (var mi=0, ml=material.materials.length; mi<ml; mi++) {
+				commitMaterialUpdated( material.materials[mi] );
+			}
+		} else {
+			material.needsUpdate = false;
+		}
 	};
 
-	var createOrUpdateGLList = function(geometry) {
-		if ( geometry._tgl === undefined )
-			geometry._tgl = {};
+	var commitObjectsUpdated = function(objects) {
+		for (var oi=0, ol=objects.length; oi<ol; oi++) {
+			var object = objects[oi];
 
-		if ( geometry._tgl.listId === undefined ) {
-			geometry._tgl.listId = _gl.genLists(1);
+			commitGeometryUpdated( object.geometry );
+			commitMaterialUpdated( object.material );
+		}
+	};
+
+	var hasObjectChanged = function(object) {
+		var geometry = object.geometry;
+		var material = object.material;
+
+		var objectChanged = false;
+		if ( object._tgl === undefined ) {
+			object._tgl = {};
+		} else {
+			var geometryUpdated = geometry.verticesNeedUpdate || geometry.colorsNeedUpdate || 
+								  geometry.normalsNeedUpdate || geometry.uvsNeedUpdate;
+			objectChanged = geometryUpdated || material.needsUpdate;
+		}
+
+		return objectChanged;
+	};
+
+	var setObjectAsMutable = function(object) {
+		if ( object._tgl === undefined )
+			object._tgl = {};
+
+		if ( object._tgl.listId !== undefined )
+			deleteGLList( object );
+
+		object._tgl.doNotCompile = true;
+	};
+
+	var suggestCompileObject = function(object) {
+		return ( object._tgl === undefined ) || ( object._tgl.doNotCompile !== true );
+	};
+
+	var createOrUpdateGLList = function(object) {
+		var geometry = object.geometry;
+		var material = object.material;
+
+		var listEntry = geometry.id + '+' + material.id;
+		var listInfo = _displayListCache[listEntry];
+		if ( !listInfo ) {
+			listInfo = {
+				id: _gl.genLists(1)
+			};
+			_displayListCache[listEntry] = listInfo;
+
+			geometry.addEventListener( 'dispose', onGeometryDispose );
+			material.addEventListener( 'dispose', onMaterialDispose );
 
 			_this.info.memory.lists++;
 		}
+
+		if ( object._tgl === undefined )
+			object._tgl = {};
+
+		object._tgl.listId = listInfo.id;
+
+		return listInfo.id;
 	};
 
-	var deleteGLList = function(geometry) {
-		if ( geometry._tgl !== undefined && geometry._tgl.listId !== undefined ) {
-			_gl.deleteLists( geometry._tgl.listId, 1 );
-			geometry._tgl.listId = undefined;
+	var checkGLList = function(object) {
+		if ( object._tgl === undefined || object._tgl.listId === undefined )
+			return false;
+
+		// this is unlikely to happen, but we just check it to avoid exceptions
+		if ( !_gl.isList( object._tgl.listId ) )
+			object._tgl.listId = undefined;
+
+		return object._tgl.listId !== undefined;
+	};
+
+	var deleteGLList = function() {
+		var found = [];
+
+		if ( arguments[0] instanceof THREE.Object3D ) {
+			var object = arguments[0];
+			var listEntry = object.geometry.id + '+' + object.material.id;
+			if ( listEntry in _displayListCache )
+				found.push( listEntry );
+			if ( object._tgl !== undefined && object._tgl.listId !== undefined )
+				object._tgl.listId = undefined;
+
+		} else if ( arguments[0] instanceof THREE.Geometry ) {
+			var geometry = arguments[0];
+			var listEntryExp = geometry.id + '+';
+			for ( var entry in _displayListCache ) {
+				if ( entry.indexOf( listEntryExp ) >= 0 )
+					found.push( entry );
+			}
+		} else if ( arguments[0] instanceof THREE.Material ) {
+			var material = arguments[0];
+			var listEntryExp = '+' + material.id;
+			for ( var entry in _displayListCache ) {
+				if ( entry.indexOf( listEntryExp ) >= 0 )
+					found.push( entry );
+			}
+		}
+
+		for (var li=0, ll=found.length; li<ll; li++) {
+			var listEntry = found[li];
+			var listInfo = _displayListCache[listEntry];
+			_gl.deleteLists( listInfo.id, 1 );
+			_displayListCache[listEntry] = undefined;
 
 			_this.info.memory.lists--;
 		}
-	};
-
-	var onGeometryDispose = function(evt) {
-		var geometry = evt.target;
-		geometry.removeEventListener( 'dispose', onGeometryDispose );
-		deleteGLList( geometry );
 	};
 
 	var setMatIllumCoefficients = function(side, ambient, diffuse, emissive, specular, shininess) {
@@ -1107,7 +1367,8 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		render: {
 			lights:   0, 
 			vertices: 0, 
-			faces:    0
+			faces:    0, 
+			calls:    0
 		}
 
 	};
@@ -1169,8 +1430,6 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		_viewport.y = y !== undefined ? y : 0;
 		_viewport.w = width !== undefined ? width : _canvas.width;
 		_viewport.h = height !== undefined ? height : _canvas.height;
-
-		_gl.viewport(0, 0, _canvas.width, _canvas.height);
 	};
 
 	this.clear = function(color, depth, stencil) {
@@ -1197,6 +1456,7 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		this.info.render.lights = 0;
 		this.info.render.vertices = 0;
 		this.info.render.faces = 0;
+		this.info.render.calls = 0;
 
 		if ( scene.autoUpdate === true )
 			scene.updateMatrixWorld();
@@ -1209,8 +1469,16 @@ THREE.TinyGLRenderer = function ( parameters ) {
 
 		_frustum.setFromMatrix( _viewProjectionMatrix );
 
-		// walk down scene graph, collecting render objects
-		walkGraph(scene);
+		// walk down scenegraph, collecting render objects
+		walkGraph( scene );
+
+		if ( _sortBeforeRender ) {
+			// sort meshes from the closest farther to reduce overdraw
+			computeObjectsDepth( _renderData.meshes );
+			sortObjects( _renderData.meshes, function opaqueSort(a, b) {
+				return b._tgl.depth - a._tgl.depth;
+			} );
+		}
 
 		_gl.viewport( _viewport.x, _viewport.y, _viewport.w, _viewport.h );
 
@@ -1235,8 +1503,9 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		for (var oi=0, ol=_renderData.meshes.length; oi<ol; oi++) {
 			drawMesh( _renderData.meshes[oi], useLighting );
 		}
+		commitObjectsUpdated( _renderData.meshes );
 
-		// Do not illuminate lines and sprites
+		// Do not illuminate lines, particles and sprites
 		//
 		_gl.disable( _gl.LIGHTING );
 
@@ -1245,6 +1514,14 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		for (var oi=0, ol=_renderData.lines.length; oi<ol; oi++) {
 			drawLine( _renderData.lines[oi] );
 		}
+		commitObjectsUpdated( _renderData.lines );
+
+		// render particle systems
+		//
+		for (var oi=0, ol=_renderData.particleSystems.length; oi<ol; oi++) {
+			drawParticles( _renderData.particleSystems[oi] );
+		}
+		commitObjectsUpdated( _renderData.particleSystems );
 
 		// render sprites
 		//
@@ -1310,7 +1587,52 @@ THREE.TinyGLRenderer = function ( parameters ) {
  * 3. This notice may not be removed or altered from any source distribution.
  */
 
-var TinyGLRenderingContext = (function() {
+var TinyGLRenderingContext;
+
+function initializeTinyGLRuntime(options) {
+
+	// guarantee TinyGL runtime be initialized only once
+	if (TinyGLRenderingContext)
+		return;
+
+	// define a console to output messages
+	var debug_output = (typeof console) != 'undefined' ? console : {
+		info:  function() {}, 
+		warn:  function() {}, 
+		error: function() {}
+	};
+
+	options = options || {};
+
+	var Module = {};
+
+	if (options.TOTAL_HEAP_MEMORY) {
+		if ((typeof options.TOTAL_HEAP_MEMORY) == 'number') {
+			Module.TOTAL_MEMORY = options.TOTAL_HEAP_MEMORY;
+		} else if ((typeof options.TOTAL_HEAP_MEMORY) == 'string') {
+			var match = /^\+?\b((?:[0-9]*\.)?[0-9]+)([KMG]?)$/.exec(options.TOTAL_HEAP_MEMORY);
+			if (match) {
+				switch (match[2]) {
+				case 'K':
+					Module.TOTAL_MEMORY = Math.floor(parseFloat(match[1]) * 1024);
+					break;
+				case 'M':
+					Module.TOTAL_MEMORY = Math.floor(parseFloat(match[1]) * 1024 * 1024);
+					break;
+				case 'G':
+					Module.TOTAL_MEMORY = Math.floor(parseFloat(match[1]) * 1024 * 1024 * 1024);
+					break;
+				default:
+					Module.TOTAL_MEMORY = Math.floor(parseFloat(match[1]));
+					break;
+				}
+			} else {
+				debug_output.warn('Invalid value for option TOTAL_HEAP_MEMORY');
+			}
+		} else {
+			debug_output.warn('Invalid value for option TOTAL_HEAP_MEMORY');
+		}
+	}
 
 function e(a){throw a;}var i=void 0,j=!0,m=null,n=!1;function p(){return function(){}}var r;r||(r=eval("(function() { try { return Module || {} } catch(e) { return {} } })()"));var aa={},s;for(s in r)r.hasOwnProperty(s)&&(aa[s]=r[s]);var t="object"===typeof process&&"function"===typeof require,ba="object"===typeof window,ca="function"===typeof importScripts,da=!ba&&!t&&!ca;
 if(t){r.print||(r.print=function(a){process.stdout.write(a+"\n")});r.printErr||(r.printErr=function(a){process.stderr.write(a+"\n")});var ea=require("fs"),fa=require("path");r.read=function(a,b){var a=fa.normalize(a),c=ea.readFileSync(a);!c&&a!=fa.resolve(a)&&(a=path.join(__dirname,"..","src",a),c=ea.readFileSync(a));c&&!b&&(c=c.toString());return c};r.readBinary=function(a){return r.read(a,j)};r.load=function(a){ga(read(a))};r.arguments=process.argv.slice(2);module.exports=r}else da?(r.print||(r.print=
@@ -1721,12 +2043,6 @@ setTimeout(function(){setTimeout(function(){r.setStatus("")},1);ja||b()},1)):b()
 		ctx3d.texParameteri(ctx3d.TEXTURE_2D, ctx3d.TEXTURE_WRAP_T, ctx3d.CLAMP_TO_EDGE);
 		return texture;
 	}
-
-	var debug_output = (typeof console) != 'undefined' ? console : {
-		info: function() {}, 
-		warn: function() {}, 
-		error: function() {}
-	};
 
 
 	/**
@@ -3204,7 +3520,7 @@ setTimeout(function(){setTimeout(function(){r.setStatus("")},1);ja||b()},1)):b()
 				 *      data:   <Array>/<TypedArray>
 				 * }
 				 * 
-				 * where data should have a size of at least 4 * width * height.
+				 * where data array should have a size of at least 4 * width * height.
 				 */
 				var domElement = arguments[5];
 				var elem_type = '';
@@ -3216,7 +3532,7 @@ setTimeout(function(){setTimeout(function(){r.setStatus("")},1);ja||b()},1)):b()
 					elem_type = 'canvas';
 				} else if ((typeof domElement.width) == 'number' && (typeof domElement.height) == 'number' && 
 						   domElement.data && (typeof domElement.data.length) == 'number') {
-					if (domElement.data.length < 4 * width * height) {
+					if (domElement.data.length < 4 * domElement.width * domElement.height) {
 						debug_output.warn('Insufficient data for texImage2D()');
 						return;
 					}
@@ -3432,36 +3748,38 @@ setTimeout(function(){setTimeout(function(){r.setStatus("")},1);ja||b()},1)):b()
 	};
 
 
-	/*
-	 * Replace the default HTMLCanvasElement.prototype.getContext() method with our homemade 
-	 * implementation, so that a TinyGL rendering context can be fetched using the following 
-	 * semantics: 
-	 *
-	 *   var canvas = document.getElementById(canvas_id);
-	 *   var gl = canvas.getContext('experimental-tinygl');
-	 *   ...
-	 *
-	 * just as what we do when requiring a canvas2D or a WebGL context.
-	 */
-	if ((typeof HTMLCanvasElement) != 'undefined') {
-		try {
-			var default_get_context_func = HTMLCanvasElement.prototype.getContext;
-			HTMLCanvasElement.prototype.getContext = function() {
-				if (arguments[0] == 'experimental-tinygl') {
-					try {
-						return new TinyGLRenderingContextCtor(this, arguments[1]);
-					} catch (e) {
-						return null;
-					}
-					
+	TinyGLRenderingContext = TinyGLRenderingContextCtor;
+
+}
+
+
+/*
+ * Replace the default HTMLCanvasElement.prototype.getContext() method with our homemade 
+ * implementation, so that a TinyGL rendering context can be fetched using the following 
+ * semantics: 
+ *
+ *   var canvas = document.getElementById(canvas_id);
+ *   var gl = canvas.getContext('experimental-tinygl');
+ *   ...
+ *
+ * just as what we do when requiring a canvas2D or a WebGL context.
+ */
+if ((typeof HTMLCanvasElement) != 'undefined') {
+	try {
+		var default_get_context_func = HTMLCanvasElement.prototype.getContext;
+		HTMLCanvasElement.prototype.getContext = function() {
+			if (arguments[0] == 'experimental-tinygl') {
+				try {
+					// initialize TinyGL runtime if not yet
+					if (!TinyGLRenderingContext)
+						initializeTinyGLRuntime(arguments[1]);
+					return new TinyGLRenderingContext(this, arguments[1]);
+				} catch (e) {
+					return null;
 				}
-				return default_get_context_func.apply(this, arguments);
-			};
-		} catch (e) {
-		}
+			}
+			return default_get_context_func.apply(this, arguments);
+		};
+	} catch (e) {
 	}
-
-
-	return TinyGLRenderingContextCtor;
-
-}) ();
+}
