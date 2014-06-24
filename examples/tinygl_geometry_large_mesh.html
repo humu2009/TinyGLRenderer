@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - geometry - large mesh</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body {
+				background:#000;
+				color:#fff;
+				padding:0;
+				margin:0;
+				overflow:hidden;
+				font-family:georgia;
+				text-align:center;
+			}
+			h1 { }
+			a { color:skyblue }
+			canvas { pointer-events:none; z-index:10; }
+			#log { position:absolute; top:50px; text-align:left; display:block; z-index:100 }
+			#d { text-align:center; margin:1em 0 -18em 0; z-index:0; position:relative; display:block }
+			.button { background:orange; color:#fff; padding:0.2em 0.5em; cursor:pointer }
+			.inactive { background:#999; color:#eee }
+		</style>
+	</head>
+
+	<body>
+		<div style="width:480px; margin:auto; position:relative;">
+			<canvas id="cv" style="width:480px; height:360px;" width="480" height="360" ></canvas>
+			<span id="antialiasing" class="button inactive">Antialiasing Off</span>
+		</div>
+
+		<pre id="log"></pre>
+
+		<script src="../lib/three.min.js"></script>
+		<script src="../build/tinyglrenderer.js"></script>
+
+		<script src="js/loaders/BinaryLoader.js"></script>
+
+		<script src="js/libs/stats.min.js"></script>
+
+		<script>
+
+			var SCREEN_WIDTH = window.innerWidth;
+			var SCREEN_HEIGHT = window.innerHeight;
+			var FLOOR = -250;
+
+			var container, stats, canvasElement;
+
+			var camera, scene, renderer;
+
+			var loader;
+
+			var mesh, zmesh, lightMesh;
+
+			var directionalLight, pointLight;
+
+			var mouseX = 0, mouseY = 0;
+
+			var windowHalfX = window.innerWidth / 2;
+			var windowHalfY = window.innerHeight / 2;
+
+			var useAntialiasing = false;
+			var antialiasing = document.getElementById( "antialiasing" );
+
+			antialiasing.className = useAntialiasing ? "button" : "button inactive";
+
+			document.addEventListener( 'mousemove', onDocumentMouseMove, false );
+
+			init();
+			animate();
+
+			function addMesh( geometry, scale, x, y, z, rx, ry, rz, material ) {
+
+				mesh = new THREE.Mesh( geometry, material );
+
+				mesh.scale.set( scale, scale, scale );
+				mesh.position.set( x, y, z );
+				mesh.rotation.set( rx, ry, rz );
+
+				scene.add( mesh );
+
+			}
+
+			function init() {
+
+				container = document.createElement( 'div' );
+				document.body.appendChild( container );
+
+				canvasElement = document.getElementById('cv');
+
+				camera = new THREE.PerspectiveCamera( 50, SCREEN_WIDTH / SCREEN_HEIGHT, 1, 100000 );
+				camera.position.z = 1500;
+
+				scene = new THREE.Scene();
+
+				// LIGHTS
+
+				var ambient = new THREE.AmbientLight( 0x101010 );
+				scene.add( ambient );
+
+				directionalLight = new THREE.DirectionalLight( 0xffffff, 0.5 );
+				directionalLight.position.set( 1, 1, 2 ).normalize();
+				//scene.add( directionalLight );
+
+				pointLight = new THREE.PointLight( 0xffaa00 );
+				pointLight.position.set( 0, 0, 0 );
+				scene.add( pointLight );
+
+				// light representation
+
+				sphere = new THREE.SphereGeometry( 100, 16, 8, 1 );
+				lightMesh = new THREE.Mesh( sphere, new THREE.MeshBasicMaterial( { color: 0xffaa00 } ) );
+				lightMesh.scale.set( 0.05, 0.05, 0.05 );
+				lightMesh.position = pointLight.position;
+				scene.add( lightMesh );
+
+				renderer = new THREE.TinyGLRenderer( {
+					TOTAL_HEAP_MEMORY: '32M', 
+					canvas: canvasElement
+				} );
+				renderer.setSize( canvasElement.width, canvasElement.height, false );
+				container.appendChild( renderer.domElement );
+
+				stats = new Stats();
+				stats.domElement.style.position = 'absolute';
+				stats.domElement.style.top = '0px';
+				stats.domElement.style.zIndex = 100;
+				container.appendChild( stats.domElement );
+
+				antialiasing.addEventListener("click", toggleAntialiasing);
+
+				loader = new THREE.BinaryLoader( true );
+				document.body.appendChild( loader.statusDomElement );
+
+				var start = Date.now();
+
+				loader.load( 'obj/lucy/Lucy100k_bin.js', function ( geometry, materials ) {
+
+					addMesh( geometry, 0.75, 0, 0, 0, 0,0,0, new THREE.MeshPhongMaterial( { ambient: 0x030303, color: 0x555555, specular: 0x666666, shininess: 10 } ) );
+
+					loader.statusDomElement.style.display = "none";
+
+					log( "geometry.vertices: " + geometry.vertices.length );
+					log( "geometry.faces: " + geometry.faces.length );
+
+					log( "model loaded and created in " + ( Date.now() - start ) + " ms" );
+
+				} );
+
+				//
+
+				window.addEventListener( 'resize', onWindowResize, false );
+
+			}
+
+			function toggleAntialiasing() {
+				useAntialiasing = !useAntialiasing;
+				antialiasing.className = useAntialiasing ? "button" : "button inactive";
+				if ( useAntialiasing ) {
+					// 4x FSAA
+					antialiasing.textContent = "Antialiasing On";
+					canvasElement.width  = 2 * parseInt(canvasElement.style.width);
+					canvasElement.height = 2 * parseInt(canvasElement.style.height);
+				} else {
+					antialiasing.textContent = "Antialiasing Off";
+					canvasElement.width  = parseInt(canvasElement.style.width);
+					canvasElement.height = parseInt(canvasElement.style.height);
+				}
+				renderer.setSize( canvasElement.width, canvasElement.height, false );
+			};
+
+			function onWindowResize() {
+
+				windowHalfX = window.innerWidth / 2;
+				windowHalfY = window.innerHeight / 2;
+			}
+
+			function onDocumentMouseMove( event ) {
+
+				mouseX = ( event.clientX - windowHalfX );
+				mouseY = ( event.clientY - windowHalfY );
+
+			}
+
+			//
+
+			function animate() {
+
+				requestAnimationFrame( animate );
+
+				render();
+				stats.update();
+
+			}
+
+			var r = 0;
+
+			function render() {
+
+				camera.position.x += ( mouseX - camera.position.x ) * .05;
+				camera.position.y += ( - mouseY - camera.position.y ) * .05;
+
+				camera.lookAt( scene.position );
+
+				lightMesh.position.x = 700 * Math.cos( r );
+				lightMesh.position.z = 700 * Math.sin( r );
+
+				r += 0.01;
+
+				renderer.render( scene, camera );
+
+			}
+
+			function log( text ) {
+
+				var e = document.getElementById( "log" );
+				e.innerHTML = text + "<br/>" + e.innerHTML;
+
+			}
+
+		</script>
+
+	</body>
+</html>
