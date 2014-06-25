@@ -82,7 +82,7 @@
 				mesh.scale.x = - 1;
 				scene.add( mesh );
 
-				renderer = new THREE.TinyGLRenderer();
+				renderer = new THREE.TinyGLRenderer( { TOTAL_HEAP_MEMORY: '32M' } );
 				renderer.setSize( window.innerWidth, window.innerHeight );
 
 				container.appendChild( renderer.domElement );
