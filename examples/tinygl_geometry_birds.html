@@ -367,7 +367,7 @@
 
 				}
 
-				renderer = new THREE.TinyGLRenderer();
+				renderer = new THREE.TinyGLRenderer( { compileObjects: 'none'/* don't use display lists since the objects are always changing */ } );
 				// renderer.autoClear = false;
 				renderer.setSize( SCREEN_WIDTH, SCREEN_HEIGHT );
 
