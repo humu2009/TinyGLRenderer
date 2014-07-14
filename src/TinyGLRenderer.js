@@ -39,8 +39,23 @@ THREE.TinyGLRenderer = function ( parameters ) {
 
 	var _canvas = parameters.canvas !== undefined ? parameters.canvas : document.createElement( 'canvas' );
 
+	// If set to true, all meshes will be drawn with wireframe regardless of what their 
+	// materails specify.
 	var _forceWireframe = parameters.forceWireframe === true;
+	// If set to false, texture filtering will be turned off. Relative settings inside 
+	// texture objects will be ignored.
+	var _enableTextureFilter = parameters.enableTextureFilter !== false;
+	// If set to false, object sorting will be disabled.
 	var _sortBeforeRender = parameters.sortObjects !== false;
+	// 1) none   - Don't try to compile objects to display lists. Drawing are always done 
+	//             using immediate mode; 
+	// 2) once   - Compile objects to display lists before the 1st time they are drawn. 
+	//             If they changes (either geometry or material) after that, drop the 
+	//             display lists and turn to immediate mode; 
+	// 3) always - Always compile objects to display lists. If changes are detected, drop 
+	//             the old lists and generate new ones. (Not implemented yet)
+	var _compileToLists = parameters.compileObjects !== 'none';
+	var _alwaysCompileToLists = parameters.compileObjects === 'always';
 
 	var _gl = _canvas.getContext('experimental-tinygl', parameters);
 	if (!_gl)
@@ -357,8 +372,10 @@ THREE.TinyGLRenderer = function ( parameters ) {
 			if ( (texture instanceof THREE.Texture) || (texture instanceof THREE.DataTexture) )
 				_gl.texImage2D( _gl.TEXTURE_2D, 0, 3, _gl.RGB, _gl.UNSIGNED_BYTE, texture.image );
 
-			_gl.texParameteri( _gl.TEXTURE_2D, _gl.TEXTURE_MIN_FILTER, _gl.NEAREST );
-			_gl.texParameteri( _gl.TEXTURE_2D, _gl.TEXTURE_MAG_FILTER, _gl.NEAREST );
+			_gl.texParameteri( _gl.TEXTURE_2D, _gl.TEXTURE_MIN_FILTER, 
+							  ( !_enableTextureFilter || texture.minFilter === THREE.NearestFilter ) ? _gl.NEAREST : _gl.LINEAR );
+			_gl.texParameteri( _gl.TEXTURE_2D, _gl.TEXTURE_MAG_FILTER, 
+							  ( !_enableTextureFilter || texture.magFilter === THREE.NearestFilter ) ? _gl.NEAREST : _gl.LINEAR );
 			_gl.texParameteri( _gl.TEXTURE_2D, _gl.TEXTURE_WRAP_S, _gl.REPEAT );
 			_gl.texParameteri( _gl.TEXTURE_2D, _gl.TEXTURE_WRAP_T, _gl.REPEAT );
 			_gl.bindTexture( _gl.TEXTURE_2D, null );
@@ -423,41 +440,47 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		var material = particleSystem.material;
 		var modelMatrix = particleSystem.matrixWorld;
 
-		var vertices = geometry.vertices;
-		var colors   = geometry.colors;
-
 		if ( material === undefined )
 			return;
 
+		// apply material basic color
+		_color.copy( material.color );
+		_gl.color3f( _color.r, _color.g, _color.b );
+
+		var isBufferGeometry = geometry instanceof THREE.BufferGeometry;
+
 		var useCompiled = false;
 		var compileAndExecute = false;
-		if ( checkGLList( particleSystem ) ) {
-			if ( !hasObjectChanged( particleSystem ) )
-				useCompiled = true;
-			else
-				setObjectAsMutable( particleSystem );
-		} else {
-			compileAndExecute = suggestCompileObject( particleSystem );
+		if ( !isBufferGeometry && _compileToLists ) {
+			if ( checkGLList( particleSystem ) ) {
+				if ( !hasObjectChanged( particleSystem ) )
+					useCompiled = true;
+				else
+					setObjectAsMutable( particleSystem );
+			} else {
+				compileAndExecute = suggestCompileObject( particleSystem );
+			}
 		}
 
 		_gl.pushMatrix();
 		_gl.multMatrixf( modelMatrix.toArray() );
 
-		if ( useCompiled ) {
+		if ( isBufferGeometry ) {
+			drawObjectWithBufferGeometry( particleSystem, false );
+		} else if ( useCompiled ) {
 			_gl.callList( particleSystem._tgl.listId );
-			_this.info.render.vertices += vertices.length;
+			_this.info.render.vertices += geometry.vertices.length;
 			_this.info.render.calls++;
 		} else {
-			var useVertexColor = material.vertexColors && ( colors.length === vertices.length );
-			if ( !useVertexColor ) {
-				var materialColor = material.color;
-				_gl.color3f( materialColor.r, materialColor.g, materialColor.b );
-			}
-
 			if ( compileAndExecute ) {
 				createOrUpdateGLList( particleSystem );
 				_gl.newList( particleSystem._tgl.listId, _gl.COMPILE );
 			}
+
+			var vertices = geometry.vertices;
+			var colors   = geometry.colors;
+
+			var useVertexColor = material.vertexColors && ( colors.length === vertices.length );
 
 			_gl.begin( _gl.POINTS );
 
@@ -494,41 +517,47 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		var material = line.material;
 		var modelMatrix = line.matrixWorld;
 
-		var vertices = geometry.vertices;
-		var colors   = geometry.colors;
-
 		if ( material === undefined )
 			return;
 
+		// apply material basic color
+		_color.copy( material.color );
+		_gl.color3f( _color.r, _color.g, _color.b );
+
+		var isBufferGeometry = geometry instanceof THREE.BufferGeometry;
+
 		var useCompiled = false;
 		var compileAndExecute = false;
-		if ( checkGLList( line ) ) {
-			if ( !hasObjectChanged( line ) )
-				useCompiled = true;
-			else
-				setObjectAsMutable( line );
-		} else {
-			compileAndExecute = suggestCompileObject( line );
+		if ( !isBufferGeometry && _compileToLists ) {
+			if ( checkGLList( line ) ) {
+				if ( !hasObjectChanged( line ) )
+					useCompiled = true;
+				else
+					setObjectAsMutable( line );
+			} else {
+				compileAndExecute = suggestCompileObject( line );
+			}
 		}
 
 		_gl.pushMatrix();
 		_gl.multMatrixf( modelMatrix.toArray() );
 
-		if ( useCompiled ) {
+		if ( isBufferGeometry ) {
+			drawObjectWithBufferGeometry( line, false );
+		} else if ( useCompiled ) {
 			_gl.callList( line._tgl.listId );
-			_this.info.render.vertices += vertices.length;
+			_this.info.render.vertices += geometry.vertices.length;
 			_this.info.render.calls++;
 		} else {
-			var useVertexColor = ( material.vertexColors /* === true */ ) && ( colors.length === vertices.length );
-			if ( !useVertexColor ) {
-				_color.copy( material.color );
-				_gl.color3f( _color.r, _color.g, _color.b );
-			}
-
 			if ( compileAndExecute ) {
 				createOrUpdateGLList( line );
 				_gl.newList( line._tgl.listId, _gl.COMPILE );
 			}
+
+			var vertices = geometry.vertices;
+			var colors   = geometry.colors;
+
+			var useVertexColor = ( material.vertexColors /* === true */ ) && ( colors.length === vertices.length );
 
 			_gl.begin( line.type === THREE.LinePieces ? _gl.LINES : _gl.LINE_STRIP );
 
@@ -566,11 +595,9 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		var geometry = mesh.geometry;
 		var modelMatrix = mesh.matrixWorld;
 
-		var vertices = geometry.vertices;
-		var faces = geometry.faces;
-		var faceVertexUvs = geometry.faceVertexUvs;
+		var isBufferGeometry = geometry instanceof THREE.BufferGeometry;
 
-		if ( faces.length < 1 )
+		if ( !isBufferGeometry && geometry.faces.length < 1 )
 			return;
 
 		var isFaceMaterial = mesh.material instanceof THREE.MeshFaceMaterial;
@@ -584,14 +611,23 @@ THREE.TinyGLRenderer = function ( parameters ) {
 
 			applyMaterial( mesh.material, useLighting );
 
-			// compute vertex normals if they are not prepared yet
-			if ( mesh.material.shading === THREE.SmoothShading && 
-				 geometry.faces[0].vertexNormals.length === 0 ) {
-				geometry.computeVertexNormals();
-			}
+			if ( isBufferGeometry ) {
+				// compute vertex normals if they are not prepared yet
+				if ( mesh.material.shading === THREE.SmoothShading && 
+					 !( 'normal' in geometry.attributes ) ) {
+					geometry.computeVertexNormals();
+				}
+			} else {
+				// compute vertex normals if they are not prepared yet
+				if ( mesh.material.shading === THREE.SmoothShading && 
+					 geometry.faces[0].vertexNormals.length === 0 ) {
+					geometry.computeVertexNormals();
+				}
 
-			if ( mesh.material.morphTargets && mesh.morphTargetBase ) {
-				useMorphing = updateMorphing( mesh );
+				// update active morph influences
+				if ( mesh.material.morphTargets && mesh.morphTargetBase ) {
+					useMorphing = updateMorphing( mesh );
+				}
 			}
 		} else { // material per face
 			// pack faces into batches by materials so that material switching 
@@ -605,28 +641,32 @@ THREE.TinyGLRenderer = function ( parameters ) {
 
 		var useCompiled = false;
 		var compileAndExecute = false;
-		if ( checkGLList( mesh ) ) {
-			if ( !hasObjectChanged( mesh ) )
-				useCompiled = true;
-			else
-				setObjectAsMutable( mesh );
-		} else if ( !isFaceMaterial && !mesh.material.morphTargets && !mesh.material.morphNormals ) {
-			compileAndExecute = suggestCompileObject( mesh );
+		if ( !isBufferGeometry && _compileToLists ) {
+			if ( checkGLList( mesh ) ) {
+				if ( !hasObjectChanged( mesh ) )
+					useCompiled = true;
+				else
+					setObjectAsMutable( mesh );
+			} else if ( !isFaceMaterial && !mesh.material.morphTargets && !mesh.material.morphNormals ) {
+				compileAndExecute = suggestCompileObject( mesh );
+			}
 		}
 		
 		_gl.pushMatrix();
 		_gl.multMatrixf( modelMatrix.toArray() );
 
-		if ( useCompiled ) {
+		if ( isBufferGeometry ) {
+			drawObjectWithBufferGeometry( mesh, useLighting );
+		} else if ( useCompiled ) {
 			_gl.callList( mesh._tgl.listId );
-			_this.info.render.faces += faces.length;
-			_this.info.render.vertices += 3 * faces.length;
+			_this.info.render.faces += geometry.faces.length;
+			_this.info.render.vertices += 3 * geometry.faces.length;
 			_this.info.render.calls++;
 		} else if ( compileAndExecute ) {
 			compileMesh( mesh );
 			_gl.callList( mesh._tgl.listId );
-			_this.info.render.faces += faces.length;
-			_this.info.render.vertices += 3 * faces.length;
+			_this.info.render.faces += geometry.faces.length;
+			_this.info.render.vertices += 3 * geometry.faces.length;
 			_this.info.render.calls++;
 		} else {
 			/*
@@ -634,6 +674,10 @@ THREE.TinyGLRenderer = function ( parameters ) {
 			 */
 
 			var material = mesh.material;
+
+			var vertices = geometry.vertices;
+			var faces = geometry.faces;
+			var faceVertexUvs = geometry.faceVertexUvs;
 
 			var batches;
 			var batchIndex = 0;
@@ -1052,6 +1096,141 @@ THREE.TinyGLRenderer = function ( parameters ) {
 		_gl.endList();
 	};
 
+	var drawObjectWithBufferGeometry = function(object, useLighting) {
+		var geometry = object.geometry;
+		var material = object.material;
+
+		//ASSERT: geometry instanceof THREE.BufferGeometry
+
+		var attribs = geometry.attributes;
+
+		if ( object instanceof THREE.Mesh ) {
+			var indices = attribs['index'];
+			var positions = attribs['position'];
+			var normals = attribs['normal'];
+			var colors = attribs['color'];
+			var uvs = attribs['uv'];
+
+			// vertex positions must have been set
+			if ( !positions )
+				return;
+
+			var useVertexNormal = normals && ( material.shading === THREE.SmoothShading );
+			var useVertexColor = colors && ( material.vertexColors === THREE.VertexColors );
+			var useVertexUV = uvs && hasTextureMapping( geometry, material );
+
+			// enable/disble vertex attributes
+			//
+
+			_gl.enableClientState( _gl.VERTEX_ARRAY );
+
+			if ( useLighting && useVertexNormal )
+				_gl.enableClientState( _gl.NORMAL_ARRAY );
+			else
+				_gl.disableClientState( _gl.NORMAL_ARRAY );
+
+			if ( useVertexColor )
+				_gl.enableClientState( _gl.COLOR_ARRAY );
+			else
+				_gl.disableClientState( _gl.COLOR_ARRAY );
+
+			if ( useVertexUV )
+				_gl.enableClientState( _gl.TEXTURE_COORD_ARRAY );
+			else
+				_gl.disableClientState( _gl.TEXTURE_COORD_ARRAY );
+
+			// draw mesh
+			//
+			if ( indices ) { // indexed faces
+				var offsets = geometry.offsets;
+				for (var i=0, l=offsets.length; i<l; i++) {
+					var startIndex = offsets[i].index;
+
+					_gl.vertexPointer( positions.itemSize, _gl.FLOAT, 0, startIndex === 0 ? 
+										positions.array : positions.array.subarray( startIndex * positions.itemSize ) );
+
+					if ( useLighting && useVertexNormal )
+						_gl.normalPointer( _gl.FLOAT, 0, startIndex === 0 ? 
+											normals.array : normals.array.subarray( startIndex * normals.itemSize ) );
+
+					if ( useVertexColor )
+						_gl.colorPointer( colors.itemSize, _gl.FLOAT, 0, startIndex === 0 ? 
+											colors.array : colors.array.subarray( startIndex * colors.itemSize ) );
+
+					if ( useVertexUV )
+						_gl.texCoordPointer( uvs.itemSize, _gl.FLOAT, 0, startIndex === 0 ? 
+												uvs.array : uvs.array.subarray( startIndex * uvs.itemSize ) );
+
+					var numOfIndices = offsets[i].count;
+					_gl.drawElements( _gl.TRIANGLES, numOfIndices, _gl.UNSIGNED_SHORT, offsets[i].start === 0 ? 
+										indices.array : indices.array.subarray( offsets[i].start ) );
+
+					// update statistics
+					_this.info.render.faces += numOfIndices / 3;
+					_this.info.render.vertices += numOfIndices;	// not accurate value, only for reference
+					_this.info.render.calls++;
+				}
+			} else {         // non-indexed faces
+				_gl.vertexPointer( positions.itemSize, _gl.FLOAT, 0, positions.array );
+
+				if ( useLighting && useVertexNormal )
+					_gl.normalPointer( _gl.FLOAT, 0, normals.array );
+
+				if ( useVertexColor )
+					_gl.colorPointer( colors.itemSize, _gl.FLOAT, 0, colors.array );
+
+				if ( useVertexUV )
+					_gl.texCoordPointer( uvs.itemSize, _gl.FLOAT, 0, uvs.array );
+					
+				var numOfVertices = ( ( positions.numItems !== undefined ) ? 
+										positions.numItems : positions.array.length ) / positions.itemSize;
+				_gl.drawArrays( _gl.TRIANGLES, 0, numOfVertices );
+
+				// update statistics
+				_this.info.render.faces += numOfVertices / 3;
+				_this.info.render.vertices += numOfVertices;
+				_this.info.render.calls++;
+			}
+		} else if ( ( object instanceof THREE.Line ) || ( object instanceof THREE.ParticleSystem ) ) {
+			var positions = attribs['position'];
+			var colors = attribs['color'];
+
+			if ( !positions )
+				return;
+
+			// setup vertex attributes and draw this primitive
+			//
+
+			_gl.enableClientState( _gl.VERTEX_ARRAY );
+			_gl.vertexPointer( positions.itemSize, _gl.FLOAT, 0, positions.array );
+
+			if ( material.vertexColors && colors ) {
+				_gl.enableClientState( _gl.COLOR_ARRAY );
+				_gl.colorPointer( colors.itemSize, _gl.FLOAT, 0, colors.array );
+			} else
+				_gl.disableClientState( _gl.COLOR_ARRAY );
+
+			_gl.disableClientState( _gl.NORMAL_ARRAY );
+			_gl.disableClientState( _gl.TEXTURE_COORD_ARRAY );
+
+			var primitiveMode;
+			if ( object instanceof THREE.ParticleSystem )
+				primitiveMode = _gl.POINTS;
+			else if ( object.type === THREE.LinePieces )
+				primitiveMode = _gl.LINES;
+			else
+				primitiveMode = _gl.LINE_STRIP;
+
+			var numOfVertices = ( ( positions.numItems !== undefined ) ? 
+									positions.numItems : positions.array.length ) / positions.itemSize;
+			_gl.drawArrays( primitiveMode, 0, numOfVertices );
+
+			// update statistics
+			_this.info.render.vertices += numOfVertices;
+			_this.info.render.calls++;
+		}
+	};
+
 	var hasBatches = function(mesh) {
 		return ( mesh._tgl !== undefined ) && ( mesh._tgl.batches !== undefined );
 	};
@@ -1088,11 +1267,19 @@ THREE.TinyGLRenderer = function ( parameters ) {
 	};
 
 	var commitGeometryUpdated = function(geometry) {
-		geometry.verticesNeedUpdate = false;
-		geometry.colorsNeedUpdate = false;
-		geometry.normalsNeedUpdate = false;
-		geometry.uvsNeedUpdate = false;
-		// Other flags? We don't use them yet.
+		if ( geometry instanceof THREE.BufferGeometry ) {
+			var attribs = geometry.attributes;
+			for ( var name in attribs ) {
+				var item = attribs[name];
+				item.needsUpdate = false;
+			}
+		} else {
+			geometry.verticesNeedUpdate = false;
+			geometry.colorsNeedUpdate = false;
+			geometry.normalsNeedUpdate = false;
+			geometry.uvsNeedUpdate = false;
+			// Other flags? We don't use them yet.
+		}
 	};
 
 	var commitMaterialUpdated = function(material) {
@@ -1228,9 +1415,13 @@ THREE.TinyGLRenderer = function ( parameters ) {
 
 	var hasTextureMapping = function(geometry, material) {
 		//NOTE: we do not deal with multi-texturing since TinyGL does not support this feature
-		var uv0s = geometry.faceVertexUvs[0];
-		return ( material.map && isGLTextureReady( material.map ) && 
-				( uv0s.length > 0 ) && ( uv0s.length == geometry.faces.length ) );
+		if ( geometry instanceof THREE.BufferGeometry ) {
+			return material.map && isGLTextureReady( material.map ) && geometry.attributes['uv'];
+		} else {
+			var uv0s = geometry.faceVertexUvs[0];
+			return ( material.map && isGLTextureReady( material.map ) && 
+					( uv0s.length > 0 ) && ( uv0s.length == geometry.faces.length ) );
+		}
 	};
 
 	var updateMorphing = function(mesh) {
