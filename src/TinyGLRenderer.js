@@ -378,7 +378,7 @@ THREE.TinyGLRenderer = function ( parameters ) {
 							  ( !_enableTextureFilter || texture.magFilter === THREE.NearestFilter ) ? _gl.NEAREST : _gl.LINEAR );
 			_gl.texParameteri( _gl.TEXTURE_2D, _gl.TEXTURE_WRAP_S, _gl.REPEAT );
 			_gl.texParameteri( _gl.TEXTURE_2D, _gl.TEXTURE_WRAP_T, _gl.REPEAT );
-			_gl.bindTexture( _gl.TEXTURE_2D, null );
+			_gl.bindTexture( _gl.TEXTURE_2D, 0 );
 
 			texture.needsUpdate = false;
 			texture.addEventListener( 'dispose', onTextureDispose );
